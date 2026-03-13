@@ -1,4 +1,4 @@
-const { queryAll, queryOne, runSql, saveDb } = require('../db/schema');
+const { queryAll, queryOne, runSql } = require('../db/schema');
 
 function checkDeadlines() {
     try {
@@ -43,7 +43,6 @@ function checkDeadlines() {
         if (overdueTasks.length > 0 || approachingTasks.length > 0) {
             console.log(`⏰ Deadline check: ${overdueTasks.length} overdue, ${approachingTasks.length} approaching`);
         }
-        saveDb();
     } catch (err) {
         console.error('Deadline check error:', err);
     }

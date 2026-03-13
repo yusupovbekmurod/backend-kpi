@@ -8,7 +8,7 @@ router.get('/stats', authMiddleware, (req, res) => {
     try {
         const total = queryOne('SELECT COUNT(*) as cnt FROM tasks').cnt;
         const done = queryOne("SELECT COUNT(*) as cnt FROM tasks WHERE status = 'bajarildi'").cnt;
-        const active = queryOne("SELECT COUNT(*) as cnt FROM tasks WHERE status NOT IN ('bajarildi','muddati_otgan')").cnt;
+        const active = queryOne("SELECT COUNT(*) as cnt FROM tasks WHERE status NOT IN ('bajarildi','muddati_otgan','rad_etildi')").cnt;
         const overdue = queryOne("SELECT COUNT(*) as cnt FROM tasks WHERE status = 'muddati_otgan'").cnt;
         const rejected = queryOne("SELECT COUNT(*) as cnt FROM tasks WHERE status = 'rad_etildi'").cnt;
 
@@ -19,7 +19,13 @@ router.get('/stats', authMiddleware, (req, res) => {
         const rejectRate = total > 0 ? Math.round((rejected / total) * 100) : 0;
         const activeRate = total > 0 ? Math.round((active / total) * 100) : 0;
 
-        res.json({ total, done, active, overdue, rejected, avgDays, onTimeRate, rejectRate, activeRate });
+        const docStats = {
+            prezident: queryOne("SELECT COUNT(*) as cnt FROM tasks WHERE doc_type = 'Prezident hujjatlari' AND status NOT IN ('bajarildi','rad_etildi')").cnt,
+            vazirlar: queryOne("SELECT COUNT(*) as cnt FROM tasks WHERE doc_type = 'Vazirlar Mahkamasi hujjatlari' AND status NOT IN ('bajarildi','rad_etildi')").cnt,
+            admin: queryOne("SELECT COUNT(*) as cnt FROM tasks WHERE doc_type = 'Prezident administratsiyasi hujjatlari' AND status NOT IN ('bajarildi','rad_etildi')").cnt
+        };
+
+        res.json({ total, done, active, overdue, rejected, avgDays, onTimeRate, rejectRate, activeRate, docStats });
     } catch (err) {
         console.error('Dashboard stats error:', err);
         res.status(500).json({ error: 'Server xatosi' });

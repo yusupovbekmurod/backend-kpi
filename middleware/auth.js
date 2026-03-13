@@ -1,6 +1,12 @@
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'sirdaryo-kpi-secret-2026';
+if (!process.env.JWT_SECRET) {
+    console.error('❌ XATO: JWT_SECRET .env faylda belgilanmagan! Server to\'xtatilmoqda.');
+    console.error('   .env faylga JWT_SECRET=<kuchli_tasodifiy_string> qo\'shing.');
+    process.exit(1);
+}
+
+const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES = '24h';
 
 function generateToken(user) {

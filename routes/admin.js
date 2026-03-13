@@ -64,7 +64,7 @@ router.patch('/users/:id', authMiddleware, adminOnly, (req, res) => {
 router.patch('/users/:id/password', authMiddleware, adminOnly, (req, res) => {
     try {
         const { password } = req.body;
-        if (!password || password.length < 4) return res.status(400).json({ error: 'Parol kamida 4 belgidan iborat bo\'lishi kerak' });
+        if (!password || password.length < 8) return res.status(400).json({ error: 'Parol kamida 8 belgidan iborat bo\'lishi kerak' });
 
         const user = queryOne('SELECT * FROM users WHERE id = ?', [parseInt(req.params.id)]);
         if (!user) return res.status(404).json({ error: 'Foydalanuvchi topilmadi' });
@@ -157,6 +157,102 @@ router.delete('/organizations/:id', authMiddleware, adminOnly, (req, res) => {
             [req.user.id, 'o\'chirish', 'org', org.id, `"${org.name}" tashkilot o'chirildi`]);
 
         res.json({ message: 'Tashkilot o\'chirildi' });
+    } catch (err) { console.error(err); res.status(500).json({ error: 'Server xatosi' }); }
+});
+
+// --- CREDENTIALS MANAGEMENT ---
+
+// GET /api/admin/credentials — all user credentials overview
+router.get('/credentials', authMiddleware, adminOnly, (req, res) => {
+    try {
+        const users = queryAll(`SELECT u.id, u.username, u.full_name, u.role, u.org_id, u.is_active, u.created_at, o.name as org_name
+      FROM users u LEFT JOIN organizations o ON o.id = u.org_id WHERE u.is_active = 1 ORDER BY u.role, u.id`);
+        res.json(users);
+    } catch (err) { console.error(err); res.status(500).json({ error: 'Server xatosi' }); }
+});
+
+// PATCH /api/admin/users/:id/credentials — change username and/or password
+router.patch('/users/:id/credentials', authMiddleware, adminOnly, (req, res) => {
+    try {
+        const { username, password, full_name } = req.body;
+        const user = queryOne('SELECT * FROM users WHERE id = ?', [parseInt(req.params.id)]);
+        if (!user) return res.status(404).json({ error: 'Foydalanuvchi topilmadi' });
+
+        const changes = [];
+
+        if (full_name && full_name !== user.full_name) {
+            runSql('UPDATE users SET full_name = ? WHERE id = ?', [full_name, user.id]);
+            changes.push(`F.I.O: "${user.full_name}" → "${full_name}"`);
+        }
+
+        if (username && username !== user.username) {
+            const dup = queryOne('SELECT 1 FROM users WHERE username = ? AND id != ?', [username, user.id]);
+            if (dup) return res.status(409).json({ error: 'Bu username allaqachon mavjud' });
+            runSql('UPDATE users SET username = ? WHERE id = ?', [username, user.id]);
+            changes.push(`Login: "${user.username}" → "${username}"`);
+        }
+
+        if (password) {
+            if (password.length < 8) return res.status(400).json({ error: 'Parol kamida 8 belgidan iborat bo\'lishi kerak' });
+            const hash = bcrypt.hashSync(password, 10);
+            runSql('UPDATE users SET password_hash = ? WHERE id = ?', [hash, user.id]);
+            changes.push('Parol o\'zgartirildi');
+        }
+
+        if (changes.length === 0) return res.status(400).json({ error: 'O\'zgartirish kiritilmadi' });
+
+        runSql('INSERT INTO audit_logs (user_id, action, entity, entity_id, comment) VALUES (?,?,?,?,?)',
+            [req.user.id, 'login_ozgartirish', 'user', user.id, `"${user.full_name}" — ${changes.join(', ')}`]);
+
+        res.json({ message: changes.join('. ') });
+    } catch (err) { console.error(err); res.status(500).json({ error: 'Server xatosi' }); }
+});
+
+// POST /api/admin/bulk-reset — reset all passwords for a role
+router.post('/bulk-reset', authMiddleware, adminOnly, (req, res) => {
+    try {
+        const { role, password } = req.body;
+        if (!role || !password) return res.status(400).json({ error: 'Rol va parol majburiy' });
+        if (password.length < 8) return res.status(400).json({ error: 'Parol kamida 8 belgidan iborat bo\'lishi kerak' });
+        if (role === 'admin') return res.status(400).json({ error: 'Admin parolini alohida o\'zgartiring' });
+
+        const hash = bcrypt.hashSync(password, 10);
+        const users = queryAll('SELECT id, full_name FROM users WHERE role = ? AND is_active = 1', [role]);
+        users.forEach(u => {
+            runSql('UPDATE users SET password_hash = ? WHERE id = ?', [hash, u.id]);
+        });
+
+        runSql('INSERT INTO audit_logs (user_id, action, entity, entity_id, comment) VALUES (?,?,?,?,?)',
+            [req.user.id, 'ommaviy_parol', 'user', 0, `"${role}" rolidagi ${users.length} ta foydalanuvchi paroli qayta belgilandi`]);
+
+        res.json({ message: `${users.length} ta foydalanuvchi paroli o'zgartirildi`, count: users.length });
+    } catch (err) { console.error(err); res.status(500).json({ error: 'Server xatosi' }); }
+});
+
+// --- SETTINGS MANAGEMENT ---
+
+// GET /api/admin/settings
+router.get('/settings', authMiddleware, adminOnly, (req, res) => {
+    try {
+        const settings = queryAll('SELECT * FROM settings ORDER BY key');
+        const settingsObj = {};
+        settings.forEach(s => settingsObj[s.key] = s.value);
+        res.json({ settings, settingsObj });
+    } catch (err) { console.error(err); res.status(500).json({ error: 'Server xatosi' }); }
+});
+
+// PATCH /api/admin/settings
+router.patch('/settings', authMiddleware, adminOnly, (req, res) => {
+    try {
+        const { key, value } = req.body;
+        if (!key) return res.status(400).json({ error: 'Kalit (key) talab qilinadi' });
+
+        runSql('UPDATE settings SET value = ?, updated_at = datetime(\'now\') WHERE key = ?', [value, key]);
+
+        runSql('INSERT INTO audit_logs (user_id, action, entity, entity_id, comment) VALUES (?,?,?,?,?)',
+            [req.user.id, 'sozlama_ozgartirish', 'settings', 0, `"${key}" sozlamasi yangilandi`]);
+
+        res.json({ message: 'Sozlama yangilandi' });
     } catch (err) { console.error(err); res.status(500).json({ error: 'Server xatosi' }); }
 });
 

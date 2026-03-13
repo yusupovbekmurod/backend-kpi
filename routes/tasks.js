@@ -49,11 +49,46 @@ router.get('/', authMiddleware, (req, res) => {
         query += ' ORDER BY t.created_at DESC';
 
         const tasks = queryAll(query, params);
+        if (tasks.length === 0) return res.json([]);
+
+        // Batch load: assignees, organizations, responses
+        const taskIds = tasks.map(t => t.id);
+        const placeholders = taskIds.map(() => '?').join(',');
+
+        const allAssignees = queryAll(
+            `SELECT ta.task_id, u.id, u.full_name, u.role FROM task_assignees ta JOIN users u ON u.id = ta.user_id WHERE ta.task_id IN (${placeholders})`, taskIds
+        );
+        const allResponses = queryAll(
+            `SELECT tr.*, u.full_name FROM task_responses tr JOIN users u ON u.id = tr.user_id WHERE tr.task_id IN (${placeholders}) ORDER BY tr.responded_at DESC`, taskIds
+        );
+
+        const orgIds = [...new Set(tasks.map(t => t.org_id).filter(Boolean))];
+        let orgsMap = {};
+        if (orgIds.length > 0) {
+            const orgPlaceholders = orgIds.map(() => '?').join(',');
+            const orgs = queryAll(`SELECT * FROM organizations WHERE id IN (${orgPlaceholders})`, orgIds);
+            orgs.forEach(o => orgsMap[o.id] = o);
+        }
+
+        // Group by task_id
+        const assigneesMap = {};
+        allAssignees.forEach(a => {
+            if (!assigneesMap[a.task_id]) assigneesMap[a.task_id] = [];
+            assigneesMap[a.task_id].push({ id: a.id, full_name: a.full_name, role: a.role });
+        });
+
+        const responsesMap = {};
+        allResponses.forEach(r => {
+            if (!responsesMap[r.task_id]) responsesMap[r.task_id] = [];
+            responsesMap[r.task_id].push(r);
+        });
+
         const enriched = tasks.map(t => ({
-            ...t, files: JSON.parse(t.files || '[]'),
-            assignees: queryAll('SELECT u.id, u.full_name, u.role FROM task_assignees ta JOIN users u ON u.id = ta.user_id WHERE ta.task_id = ?', [t.id]),
-            organization: t.org_id ? queryOne('SELECT * FROM organizations WHERE id = ?', [t.org_id]) : null,
-            responses: queryAll(`SELECT tr.*, u.full_name FROM task_responses tr JOIN users u ON u.id = tr.user_id WHERE tr.task_id = ? ORDER BY tr.responded_at DESC`, [t.id]),
+            ...t,
+            files: JSON.parse(t.files || '[]'),
+            assignees: assigneesMap[t.id] || [],
+            organization: t.org_id ? (orgsMap[t.org_id] || null) : null,
+            responses: responsesMap[t.id] || [],
         }));
         res.json(enriched);
     } catch (err) { console.error('Tasks list error:', err); res.status(500).json({ error: 'Server xatosi' }); }
@@ -77,7 +112,7 @@ router.get('/:id', authMiddleware, (req, res) => {
 // POST /api/tasks — create task (mudir/admin) with file upload
 router.post('/', authMiddleware, mudirOnly, upload.array('files', 5), (req, res) => {
     try {
-        const { title, description, org_id, org_type, priority, category, deadline } = req.body;
+        const { title, description, org_id, org_type, priority, category, deadline, doc_type } = req.body;
         let assignees = req.body.assignees;
 
         // Parse assignees (may come as JSON string from FormData)
@@ -100,8 +135,8 @@ router.post('/', authMiddleware, mudirOnly, upload.array('files', 5), (req, res)
 
         const now = new Date().toISOString();
         const info = runSql(
-            'INSERT INTO tasks (title, description, org_id, org_type, priority, category, status, deadline, created_by, created_at, updated_at, files) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-            [title, description, org_id || null, org_type || null, priority || 'orta', category || null, 'yangi', deadline, req.user.id, now, now, JSON.stringify(uploadedFiles)]
+            'INSERT INTO tasks (title, description, org_id, org_type, priority, category, status, deadline, created_by, created_at, updated_at, files, doc_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            [title, description, org_id || null, org_type || null, priority || 'orta', category || null, 'yangi', deadline, req.user.id, now, now, JSON.stringify(uploadedFiles), doc_type || null]
         );
         const taskId = info.lastInsertRowid;
 
